@@ -24,19 +24,35 @@ def is_within_ordering_hours():
 
 # Coffee order time enforcement
 @app.event("message")
-def handle_workflow_message(event, client):
+def handle_workflow_message(event, client, logger):
     user = event.get("user")
     subtype = event.get("subtype")
+    text = event.get("text", "").lower()
 
     if subtype == "bot_message" or not user:
         return
 
-    if not is_within_ordering_hours():
-        client.chat_postMessage(
-            channel=user,
-            text=
-            "☕ Coffee orders are only accepted between *8–10am* and *12–2pm PST*. Please try again later!"
-        )
+    # Define keywords that indicate someone is trying to place a coffee order
+    coffee_keywords = ["coffee", "order", "latte", "espresso", "cappuccino"]
+
+    if any(word in text for word in coffee_keywords):
+        if not is_within_ordering_hours():
+            try:
+                # (Optional) Delete the message
+                client.chat_delete(channel=event["channel"], ts=event["ts"])
+
+                # Notify the user privately
+                client.chat_postMessage(
+                    channel=user,
+                    text=
+                    "☕ Coffee orders are only accepted between *8–10am* and *12–2pm PST*. Please try again later!"
+                )
+
+                logger.info(
+                    f"Deleted coffee order from <@{user}> outside valid hours."
+                )
+            except Exception as e:
+                logger.error(f"Failed to handle out-of-hours message: {e}")
 
 
 # Reaction-to-station handling
