@@ -22,19 +22,6 @@ def is_within_ordering_hours():
     return (8 <= hour < 10) or (12 <= hour < 14)
 
 
-@app.command("/coffee")
-def handle_coffee(ack, respond):
-    ack()
-
-    if not is_within_ordering_hours():
-        respond(
-            "☕ Coffee orders are only accepted between *8–10am* and *12–2pm PST*. Please try again later!"
-        )
-        return
-
-    # ✅ This is where you handle the real ordering logic
-    respond("✅ What coffee would you like today? (e.g., latte, cappuccino, etc.)")
-
 # Coffee order time enforcement
 @app.event("message")
 def handle_workflow_message(event, client, logger):
