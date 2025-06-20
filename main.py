@@ -9,11 +9,13 @@ from dotenv import load_dotenv
 from flask import Flask
 from threading import Thread
 
+# Load environment variables
 load_dotenv()
 
 app = App(token=os.environ["SLACK_BOT_TOKEN"])
-
 PST = pytz.timezone("US/Pacific")
+
+COFFEE_CHANNEL = "C08QRCC3QTS"
 
 
 def is_within_ordering_hours():
@@ -22,40 +24,62 @@ def is_within_ordering_hours():
     return (8 <= hour < 10) or (12 <= hour < 14)
 
 
-# Coffee order time enforcement
 @app.event("message")
-def handle_workflow_message(event, client, logger):
-    user = event.get("user")
+def handle_message(event, client, logger):
+    channel_id = event.get("channel")
     subtype = event.get("subtype")
+    user = event.get("user")
     text = event.get("text", "").lower()
+    blocks = event.get("blocks", [])
 
-    if subtype == "bot_message" or not user:
+    if subtype == "bot_message" and channel_id == COFFEE_CHANNEL:
+        logger.info(f"🤖 Workflow message detected")
+
+        submitter_id = None
+        match = re.search(r"<@([A-Z0-9]+)>", text)
+        if match:
+            submitter_id = match.group(1)
+        else:
+            for block in blocks:
+                block_text = block.get("text", {}).get("text", "")
+                match = re.search(r"<@([A-Z0-9]+)>", block_text)
+                if match:
+                    submitter_id = match.group(1)
+                    break
+
+        if submitter_id and not is_within_ordering_hours():
+            try:
+                client.chat_postMessage(
+                    channel=submitter_id,
+                    text=
+                    "☕ You submitted a coffee order outside of *8–10am* and *12–2pm PST*. Please try again during those hours!"
+                )
+                logger.info(
+                    f"⚠️ Notified <@{submitter_id}> about blocked order")
+            except Exception as e:
+                logger.error(f"❌ Failed to DM user: {e}")
         return
 
-    # Keywords that imply coffee workflow attempt
-    coffee_keywords = ["coffee", "order", "latte", "espresso", "cappuccino"]
+    # 🧍 Handle regular user messages
+    if not user or subtype == "bot_message":
+        return
 
-    if any(word in text for word in coffee_keywords):
+    if any(word in text
+           for word in ["coffee", "order", "latte", "espresso", "cappuccino"]):
         if not is_within_ordering_hours():
             try:
-                # Just notify the user, don't delete the message
                 client.chat_postMessage(
                     channel=user,
-                    text=(
-                        "☕ Coffee orders are only accepted between *8–10am* "
-                        "and *12–2pm PST*. Please try again later!"
-                    )
+                    text=
+                    "☕ Coffee orders are only accepted between *8–10am* and *12–2pm PST*. Please try again later!"
                 )
-                logger.info(f"Blocked coffee request by <@{user}> outside hours.")
+                logger.info(f"☕ Blocked manual request by <@{user}>")
             except Exception as e:
-                logger.error(f"Failed to notify user: {e}")
+                logger.error(f"❌ Failed to notify user: {e}")
 
 
-# Reaction-to-station handling
 @app.event("reaction_added")
 def handle_reaction_added(event, client):
-    print("🔁 Reaction event received:", event)
-
     emoji = event["reaction"]
     valid_emojis = [
         "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"
@@ -73,39 +97,28 @@ def handle_reaction_added(event, client):
                                           limit=1)
     if result["messages"]:
         original_msg = result["messages"][0]
-        print("📩 Reacted message:", original_msg)
-
         user_id = original_msg.get("user")
         station_number = valid_emojis.index(emoji) + 1
 
-        if user_id:
-            # DM directly if user is available
+        target_id = user_id or re.search(
+            r"<@([A-Z0-9]+)>", original_msg.get(
+                "text", "")).group(1) if re.search(
+                    r"<@([A-Z0-9]+)>", original_msg.get("text", "")) else None
+
+        if target_id:
             client.chat_postMessage(
-                channel=user_id,
+                channel=target_id,
                 text=
                 f"🥳 Your drink is ready at station #{station_number}! Enjoy! ☕"
             )
         else:
-            # Try to extract from the message text using the [user_id:<@U12345678>] format
-            text = original_msg.get("text", "")
-            match = re.search(r"<@([A-Z0-9]+)>", text)
-            if match:
-                extracted_user = match.group(1)
-                client.chat_postMessage(
-                    channel=extracted_user,
-                    text=
-                    f"🥳 Your drink is ready at station #{station_number}! Enjoy! ☕"
-                )
-            else:
-                # Fallback: reply in thread
-                client.chat_postMessage(
-                    channel=channel,
-                    thread_ts=ts,
-                    text=
-                    f"🥳 This drink is ready at station #{station_number}! ☕")
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=ts,
+                text=f"🥳 This drink is ready at station #{station_number}! ☕")
 
 
-# 🔁 Keep-alive Flask web server for UptimeRobot
+# 🌀 Flask ping server to keep alive
 web_app = Flask("")
 
 
@@ -121,13 +134,13 @@ def run_web():
 def send_station_announcements():
     while True:
         print("🔔 Sending station updates...")
-
-        # ✅ Replace with your real logic if needed
-        app.client.chat_postMessage(
-            channel="#general",  # or a specific user ID
-            text="☕ Station #2 is now serving drinks!")
-
-        time.sleep(600)  # Wait 10 minutes before next message
+        try:
+            app.client.chat_postMessage(
+                channel=os.environ["SLACK_ANNOUNCEMENT_CHANNEL"],
+                text="☕ Station #2 is now serving drinks!")
+        except Exception as e:
+            print(f"⚠️ Failed to send station update: {e}")
+        time.sleep(600)
 
 
 if __name__ == "__main__":
