@@ -11,6 +11,7 @@ from threading import Thread
 
 # Load environment variables
 load_dotenv()
+print("Loaded BOT TOKEN:", os.environ.get("SLACK_BOT_TOKEN"))
 
 # Initialize Slack app and timezone
 app = App(token=os.environ["SLACK_BOT_TOKEN"])
@@ -31,11 +32,36 @@ def enforce_time_restriction(client, user_id, logger, reason="ordering"):
         )
         logger.info(f"⚠️ Notified <@{user_id}> about blocked {reason}")
     except Exception as e:
-        logger.error(f"❌ Failed to DM user: {e}")
+        logger.error(f"❌ Failed to DM user {user_id}: {e}")
+
+# --- Helper to extract user ID from workflow blocks ---
+def extract_user_id_from_blocks(blocks):
+    def find_user_id(elements):
+        for elem in elements:
+            if elem.get("type") == "user":
+                return elem.get("user_id")
+            elif elem.get("type") == "text":
+                match = re.search(r"<@([A-Z0-9]+)>", elem.get("text", ""))
+                if match:
+                    return match.group(1)
+            elif "elements" in elem:
+                user_id = find_user_id(elem["elements"])
+                if user_id:
+                    return user_id
+        return None
+
+    for block in blocks:
+        if "elements" in block:
+            user_id = find_user_id(block["elements"])
+            if user_id:
+                return user_id
+
+    return None
 
 # --- Slack Events: message handler ---
 @app.event("message")
 def handle_message(event, client, logger):
+    print("🚀 Incoming message event:", event)
     channel_id = event.get("channel")
     subtype = event.get("subtype")
     user = event.get("user")
@@ -46,30 +72,17 @@ def handle_message(event, client, logger):
     if not user or subtype == "message_deleted":
         return
 
-    is_bot_workflow = subtype == "bot_message" and channel_id == COFFEE_CHANNEL
+    is_bot_workflow = subtype == "bot_message"
 
     # --- Block Workflow Messages Outside Hours ---
     if is_bot_workflow:
         logger.info("🤖 Workflow message detected")
+        submitter_id = extract_user_id_from_blocks(blocks)
+        logger.info(f"🧪 Extracted submitter ID: {submitter_id}")
 
-        submitter_id = None
-        match = re.search(r"<@([A-Z0-9]+)>", text)
-        if match:
-            submitter_id = match.group(1)
-        else:
-            for block in blocks:
-                block_text = block.get("text", {}).get("text", "")
-                match = re.search(r"<@([A-Z0-9]+)>", block_text)
-                if match:
-                    submitter_id = match.group(1)
-                    break
-
-        if submitter_id:
-            if not is_within_ordering_hours():
-                enforce_time_restriction(client, submitter_id, logger, "workflow")
-        else:
-            logger.warning("⚠️ Could not extract submitter ID from workflow message")
-        return
+        if submitter_id and not is_within_ordering_hours():
+            logger.info(f"⚙️ Submitting DM to: {submitter_id} (you are: {user})")
+            enforce_time_restriction(client, submitter_id, logger, reason="ordering")
 
     # --- Block Any Message in Coffee Channel Outside Hours ---
     if channel_id == COFFEE_CHANNEL and not is_within_ordering_hours():
