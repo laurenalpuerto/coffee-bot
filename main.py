@@ -11,14 +11,14 @@ from threading import Thread
 
 # Load environment variables
 load_dotenv()
+
 print("Loaded BOT TOKEN:", os.environ.get("SLACK_BOT_TOKEN"))
 
-# Initialize Slack app and timezone
 app = App(token=os.environ["SLACK_BOT_TOKEN"])
 PST = pytz.timezone("US/Pacific")
 COFFEE_CHANNEL = "C08QRCC3QTS"
 
-# --- Time check helpers ---
+# --- Time Check ---
 def is_within_ordering_hours():
     now = datetime.now(PST)
     hour = now.hour
@@ -32,43 +32,34 @@ def enforce_time_restriction(client, user_id, logger, reason="ordering"):
         )
         logger.info(f"⚠️ Notified <@{user_id}> about blocked {reason}")
     except Exception as e:
-        logger.error(f"❌ Failed to DM user {user_id}: {e}")
+        logger.error(f"❌ Failed to DM user <@{user_id}>: {e}")
 
-# --- Helper to extract user ID from workflow blocks ---
+# --- Extract Submitter ID ---
 def extract_user_id_from_blocks(blocks):
-    def find_user_id(elements):
-        for elem in elements:
-            if elem.get("type") == "user":
-                return elem.get("user_id")
-            elif elem.get("type") == "text":
-                match = re.search(r"<@([A-Z0-9]+)>", elem.get("text", ""))
-                if match:
-                    return match.group(1)
-            elif "elements" in elem:
-                user_id = find_user_id(elem["elements"])
-                if user_id:
-                    return user_id
-        return None
-
     for block in blocks:
-        if "elements" in block:
-            user_id = find_user_id(block["elements"])
-            if user_id:
-                return user_id
-
+        if block.get("type") == "rich_text":
+            for el in block.get("elements", []):
+                if el.get("type") == "rich_text_section":
+                    for sub_el in el.get("elements", []):
+                        if sub_el.get("type") == "user":
+                            return sub_el.get("user_id")
+                        elif sub_el.get("type") == "text":
+                            match = re.search(r"<@([A-Z0-9]+)>", sub_el.get("text", ""))
+                            if match:
+                                return match.group(1)
     return None
 
-# --- Slack Events: message handler ---
+# --- Handle Messages ---
 @app.event("message")
 def handle_message(event, client, logger):
     print("🚀 Incoming message event:", event)
+
     channel_id = event.get("channel")
     subtype = event.get("subtype")
     user = event.get("user")
-    text = event.get("text", "").lower()
     blocks = event.get("blocks", [])
+    text = event.get("text", "").lower()
 
-    # Ignore deleted or invalid messages
     if not user or subtype == "message_deleted":
         return
 
@@ -78,11 +69,18 @@ def handle_message(event, client, logger):
     if is_bot_workflow:
         logger.info("🤖 Workflow message detected")
         submitter_id = extract_user_id_from_blocks(blocks)
-        logger.info(f"🧪 Extracted submitter ID: {submitter_id}")
+        logger.info(f"🕵️ Extracted submitter ID: {submitter_id}")
 
         if submitter_id and not is_within_ordering_hours():
-            logger.info(f"⚙️ Submitting DM to: {submitter_id} (you are: {user})")
-            enforce_time_restriction(client, submitter_id, logger, reason="ordering")
+            enforce_time_restriction(client, submitter_id, logger, reason="workflow")
+
+            # --- Delete message from channel ---
+            try:
+                client.chat_delete(channel=channel_id, ts=event["ts"])
+                logger.info(f"🗑 Deleted workflow message from <@{submitter_id}>")
+            except Exception as e:
+                logger.error(f"❌ Failed to delete workflow message: {e}")
+        return
 
     # --- Block Any Message in Coffee Channel Outside Hours ---
     if channel_id == COFFEE_CHANNEL and not is_within_ordering_hours():
@@ -94,7 +92,7 @@ def handle_message(event, client, logger):
         if not is_within_ordering_hours():
             enforce_time_restriction(client, user, logger, "coffee keyword")
 
-# --- Slack Events: reaction_added handler ---
+# --- Reactions Handler ---
 @app.event("reaction_added")
 def handle_reaction_added(event, client):
     emoji = event.get("reaction")
@@ -144,9 +142,9 @@ def home():
 def run_web():
     web_app.run(host="0.0.0.0", port=8080)
 
-# --- Periodic Station Announcements ---
+# --- Disable announcement thread for testing ---
 def send_station_announcements():
-    while True:
+    while False:  # <-- DISABLED for testing
         print("🔔 Sending station updates...")
         try:
             app.client.chat_postMessage(
@@ -157,9 +155,9 @@ def send_station_announcements():
             print(f"⚠️ Failed to send station update: {e}")
         time.sleep(600)
 
-# --- App Entry Point ---
+# --- Main ---
 if __name__ == "__main__":
     Thread(target=run_web).start()
-    Thread(target=send_station_announcements).start()
+    # Thread(target=send_station_announcements).start()  # DISABLED
     handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
     handler.start()
